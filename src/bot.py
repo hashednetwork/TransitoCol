@@ -583,6 +583,10 @@ Escribe tu pregunta o envía un audio 🎤
     
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages."""
+        # Skip if user is mid document-generation conversation
+        if context.user_data.get("template"):
+            return
+
         user_query = update.message.text
         user = update.effective_user
         user_id = user.id
