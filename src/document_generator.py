@@ -103,6 +103,45 @@ CUARTO: Archivar definitivamente el presente proceso.
 """
         },
         
+
+        "parqueo_señalizacion": {
+            "title": "DERECHO DE PETICIÓN - NULIDAD COMPARENDO POR PARQUEO EN ZONA SIN SEÑALIZACIÓN (LEY 2252/2022)",
+            "legal_basis": """
+Fundamento mi solicitud en los siguientes hechos y normas:
+
+1. El artículo 23 de la Constitución Política de Colombia consagra el derecho fundamental de petición.
+
+2. El artículo 29 de la Constitución Política garantiza el debido proceso y la presunción de inocencia.
+
+3. La Ley 2252 de 2022 modificó el artículo 112 de la Ley 769 de 2002 (Código Nacional de Tránsito Terrestre), estableciendo en su Parágrafo 1° que las autoridades de tránsito SOLO podrán imponer sanciones o comparendos por estacionamiento en zonas prohibidas cuando dichas zonas estén debidamente señalizadas conforme al Manual de Señalización Vial vigente expedido por el Ministerio de Transporte.
+
+4. El Parágrafo 1° de la Ley 2252 de 2022 expresamente prohíbe imponer comparendos en zonas no señalizadas o con señalización ilegible, deteriorada o que no cumpla los estándares técnicos exigidos.
+
+5. El Parágrafo 3° de la Ley 2252 de 2022 establece que los dispositivos tecnológicos de control de tránsito, incluidas las cámaras de fotodetección, solo podrán registrar y sancionar infracciones de estacionamiento en zonas con señalización vigente, debidamente instalada y en perfectas condiciones de visibilidad. Las multas derivadas de zonas sin señalización adecuada son NULAS DE PLENO DERECHO.
+
+6. El Manual de Señalización Vial vigente (Resolución 20243040045005 de 2024) establece los estándares técnicos que debe cumplir toda señalización vial para ser jurídicamente válida.
+
+7. La Superintendencia de Transporte y las autoridades competentes están obligadas a garantizar que la señalización cumpla los requisitos técnicos antes de proceder a cualquier sanción.
+""",
+            "request": """
+PETICIÓN:
+
+Con fundamento en lo anteriormente expuesto, respetuosamente solicito:
+
+PRIMERO: Declarar la NULIDAD de pleno derecho del comparendo/multa identificado anteriormente, por cuanto la zona donde se impuso la sanción NO contaba con señalización debida conforme a lo exigido por la Ley 2252 de 2022 y el Manual de Señalización Vial vigente.
+
+SEGUNDO: Aportar prueba documental y fotográfica de:
+   a) La señalización existente en la zona al momento de la infracción.
+   b) Que dicha señalización cumple los estándares técnicos del Manual de Señalización Vial.
+   c) Fecha de instalación y última revisión de la señal.
+
+TERCERO: En caso de no poder acreditar la señalización adecuada, ordenar el ARCHIVO DEFINITIVO del proceso y el RETIRO de la multa del sistema SIMIT y cualquier otro registro.
+
+CUARTO: Levantar de manera inmediata cualquier restricción, embargo o anotación derivada de esta multa que afecte mi licencia de conducción o el vehículo.
+
+QUINTO: Expedir certificación donde conste que no tengo obligaciones pendientes respecto a esta multa.
+"""
+        },
         "fotomulta_señalizacion": {
             "title": "DERECHO DE PETICIÓN - NULIDAD FOTOMULTA POR FALTA DE SEÑALIZACIÓN",
             "legal_basis": """

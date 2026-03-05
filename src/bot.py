@@ -630,6 +630,7 @@ Escribe tu pregunta o envía un audio 🎤
             [InlineKeyboardButton("📬 Sin notificación oportuna", callback_data="doc_fotomulta_notificacion")],
             [InlineKeyboardButton("👤 No identifican al conductor", callback_data="doc_fotomulta_identificacion")],
             [InlineKeyboardButton("🚫 Sin señalización (500m)", callback_data="doc_fotomulta_señalizacion")],
+            [InlineKeyboardButton("🅿️ Parqueo zona sin señalizar (Ley 2252/2022)", callback_data="doc_parqueo_señalizacion")],
             [InlineKeyboardButton("❌ Cancelar", callback_data="doc_cancel")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -660,7 +661,8 @@ Escribe tu pregunta o envía un audio 🎤
             "prescripcion": "Prescripción de multa (Art. 159 Ley 769)",
             "fotomulta_notificacion": "Nulidad por falta de notificación (Art. 8 Ley 1843)",
             "fotomulta_identificacion": "Nulidad por no identificar conductor (C-038/2020)",
-            "fotomulta_señalizacion": "Nulidad por falta de señalización (Art. 5 Ley 1843)"
+            "fotomulta_señalizacion": "Nulidad por falta de señalización (Art. 5 Ley 1843)",
+            "parqueo_señalizacion": "Nulidad comparendo parqueo sin señalización (Ley 2252/2022)"
         }
         
         await query.edit_message_text(
