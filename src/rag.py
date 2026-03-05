@@ -1,7 +1,6 @@
 """
-Enhanced RAG Pipeline for Colombian Transit Code
-Multi-document indexing with ChromaDB and OpenAI embeddings
-Supports: Legal codes, decrees, guides, jurisprudence
+RAG Pipeline for Colombian Transit Code
+Uses ChromaDB for vector storage and OpenAI embeddings
 """
 # Fix SQLite version for ChromaDB
 __import__('pysqlite3')
@@ -10,323 +9,46 @@ sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
 
 import os
 import re
-import hashlib
-import json
-import logging
 from pathlib import Path
-from typing import List, Tuple, Dict, Optional, Any
-from datetime import datetime
+from typing import List, Tuple, Dict, Optional
 
 import chromadb
 from chromadb.config import Settings
 from openai import OpenAI
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# Configure logging
-logger = logging.getLogger(__name__)
-
 # Constants
-CHUNK_SIZE = 1000  # Increased for better context
-CHUNK_OVERLAP = 200
-COLLECTION_NAME = "transito_colombia_v2"
+CHUNK_SIZE = 800
+CHUNK_OVERLAP = 150
+COLLECTION_NAME = "codigo_transito"
 EMBEDDING_MODEL = "text-embedding-3-small"
-EMBEDDING_DIMENSIONS = 1536
 
-# Document source metadata - for citation and display
-# Priority: 1 = highest (laws, constitution), 2 = medium (decrees, jurisprudence), 3 = lower (guides)
-# url_descarga: official download/view URL for citations
-SOURCE_METADATA = {
-    "codigo_transito": {
-        "name": "Ley 769 de 2002 (Código Nacional de Tránsito Terrestre)",
-        "short_name": "Ley 769 de 2002",
-        "type": "ley",
-        "priority": 1,
-        "year": 2002,
-        "official_source": "Secretaría del Senado",
-        "url": "https://www.funcionpublica.gov.co/eva/gestornormativo/norma.php?i=5557",
-        "url_descarga": "https://www.funcionpublica.gov.co/eva/gestornormativo/norma.php?i=5557"
-    },
-    "decreto_2106": {
-        "name": "Decreto 2106 de 2019 (Simplificación de Trámites)",
-        "short_name": "Decreto 2106 de 2019",
-        "type": "decreto",
-        "priority": 2,
-        "year": 2019,
-        "official_source": "Función Pública",
-        "url": "https://www.funcionpublica.gov.co/eva/gestornormativo/norma.php?i=103352",
-        "url_descarga": "https://www.funcionpublica.gov.co/eva/gestornormativo/norma.php?i=103352"
-    },
-    "decreto_1079": {
-        "name": "Decreto 1079 de 2015 (Decreto Único Reglamentario Transporte)",
-        "short_name": "Decreto 1079 de 2015",
-        "type": "decreto",
-        "priority": 2,
-        "year": 2015,
-        "official_source": "Ministerio de Transporte",
-        "url": "https://www.funcionpublica.gov.co/eva/gestornormativo/norma.php?i=77889",
-        "url_descarga": "https://www.funcionpublica.gov.co/eva/gestornormativo/norma.php?i=77889"
-    },
-    "ley_1843": {
-        "name": "Ley 1843 de 2017 (Fotodetección de Infracciones)",
-        "short_name": "Ley 1843 de 2017",
-        "type": "ley",
-        "priority": 1,
-        "year": 2017,
-        "official_source": "Secretaría del Senado",
-        "url": "https://www.funcionpublica.gov.co/eva/gestornormativo/norma.php?i=82815",
-        "url_descarga": "https://www.funcionpublica.gov.co/eva/gestornormativo/norma.php?i=82815"
-    },
-    "compendio_normativo": {
-        "name": "Compendio Normativo de Tránsito 2024-2025",
-        "short_name": "Compendio Normativo 2024-2025",
-        "type": "compendio",
-        "priority": 1,
-        "year": 2025,
-        "official_source": "Compilación actualizada",
-        "url_descarga": None
-    },
-    "inventario_documentos": {
-        "name": "Inventario de Documentos Oficiales y Jerarquía Normativa",
-        "short_name": "Inventario de Documentos",
-        "type": "referencia",
-        "priority": 2,
-        "year": 2025,
-        "official_source": "Guía de fuentes oficiales",
-        "url_descarga": None
-    },
-    "senorbiter": {
-        "name": "Guías Prácticas Señor Biter",
-        "short_name": "Guía Señor Biter",
-        "type": "guia",
-        "priority": 3,
-        "year": 2024,
-        "official_source": "senorbiter.com - Educador en derechos de conductores",
-        "url_descarga": "https://senorbiter.com/"
-    },
-    "jurisprudencia": {
-        "name": "Jurisprudencia Constitucional",
-        "short_name": "Jurisprudencia",
-        "type": "jurisprudencia",
-        "priority": 2,
-        "year": 2020,
-        "official_source": "Corte Constitucional / Consejo de Estado",
-        "url_descarga": "https://www.corteconstitucional.gov.co/relatoria/"
-    },
-    "resolucion_compilatoria": {
-        "name": "Resolución 20223040045295 de 2022 (Resolución Única Compilatoria)",
-        "short_name": "Res. 20223040045295 de 2022",
-        "type": "resolucion",
-        "priority": 2,
-        "year": 2022,
-        "official_source": "Ministerio de Transporte",
-        "url_descarga": "https://www.mintransporte.gov.co/publicaciones/10600/resoluciones-2022/"
-    },
-    "manual_senalizacion": {
-        "name": "Manual de Señalización Vial de Colombia 2024 (Anexo 76)",
-        "short_name": "Manual Señalización 2024",
-        "type": "manual",
-        "priority": 2,
-        "year": 2024,
-        "official_source": "Ministerio de Transporte",
-        "nota": "Adoptado por Res. 20243040045005. Fe de erratas: Res. 20253040002075",
-        "url_descarga": "https://www.mintransporte.gov.co/publicaciones/manual-de-senalizacion-vial/"
-    },
-    "manual_senalizacion_2015": {
-        "name": "Manual de Señalización Vial 2015 (histórico)",
-        "short_name": "Manual Señalización 2015",
-        "type": "manual",
-        "priority": 3,
-        "year": 2015,
-        "official_source": "Ministerio de Transporte",
-        "nota": "Reemplazado por Manual 2024. Mantener para consultas retroactivas.",
-        "url_descarga": None
-    },
-    "ley_2251": {
-        "name": "Ley 2251 de 2022 (Ley Julián Esteban - Velocidad)",
-        "short_name": "Ley 2251 de 2022",
-        "type": "ley",
-        "priority": 1,
-        "year": 2022,
-        "official_source": "Función Pública",
-        "nota": "Modifica Arts. 106-107 Código de Tránsito (velocidad)",
-        "url_descarga": "https://www.funcionpublica.gov.co/eva/gestornormativo/norma.php?i=188536"
-    },
-    "pnsv_2022": {
-        "name": "Decreto 1430 de 2022 (Plan Nacional de Seguridad Vial 2022-2031)",
-        "short_name": "Decreto 1430 de 2022",
-        "type": "decreto",
-        "priority": 2,
-        "year": 2022,
-        "official_source": "DAPRE / MinTransporte",
-        "nota": "Marco de política Sistema Seguro",
-        "url_descarga": "https://www.funcionpublica.gov.co/eva/gestornormativo/norma.php?i=189923"
-    },
-    "resolucion_velocidad": {
-        "name": "Resolución 20233040025995 de 2023 (Metodología Velocidad)",
-        "short_name": "Res. 20233040025995 de 2023",
-        "type": "resolucion",
-        "priority": 2,
-        "year": 2023,
-        "official_source": "MinTransporte / ANSV",
-        "url_descarga": "https://www.mintransporte.gov.co/publicaciones/10602/resoluciones-2023/"
-    },
-    "resolucion_cascos": {
-        "name": "Resolución 20203040023385 de 2020 (Condiciones Uso Casco)",
-        "short_name": "Res. 20203040023385 de 2020",
-        "type": "resolucion",
-        "priority": 2,
-        "year": 2020,
-        "official_source": "MinTransporte",
-        "url_descarga": "https://www.mintransporte.gov.co/publicaciones/10596/resoluciones-2020/"
-    },
-    "resolucion_sast": {
-        "name": "Resolución 20203040011245 de 2020 (Criterios Técnicos SAST/Fotodetección)",
-        "short_name": "Res. 20203040011245 de 2020",
-        "type": "resolucion",
-        "priority": 2,
-        "year": 2020,
-        "official_source": "MinTransporte",
-        "nota": "Clave para legalidad de fotodetección. Se articula con Ley 1843 y Decreto 2106.",
-        "url_descarga": "https://www.mintransporte.gov.co/publicaciones/10596/resoluciones-2020/"
-    },
-    "resolucion_pesv": {
-        "name": "Resolución 20223040040595 de 2022 (Metodología PESV)",
-        "short_name": "Res. 20223040040595 de 2022",
-        "type": "resolucion",
-        "priority": 2,
-        "year": 2022,
-        "official_source": "MinTransporte",
-        "nota": "Deroga Res. 1565/2014. Obligatoria para organizaciones con PESV.",
-        "url_descarga": "https://www.mintransporte.gov.co/publicaciones/10600/resoluciones-2022/"
-    },
-    "concepto_fotomultas": {
-        "name": "Concepto Sala de Consulta Rad. 2433 de 2020 (Fotomultas)",
-        "short_name": "Concepto Rad. 2433/2020",
-        "type": "jurisprudencia",
-        "priority": 2,
-        "year": 2020,
-        "official_source": "Consejo de Estado",
-        "nota": "Doctrina orientadora sobre participación privada en fotomultas.",
-        "url_descarga": "https://www.consejodeestado.gov.co/"
-    },
-    "circular_plan365": {
-        "name": "Circular Conjunta 023 de 2025 (Plan 365)",
-        "short_name": "Circular 023 de 2025",
-        "type": "circular",
-        "priority": 3,
-        "year": 2025,
-        "official_source": "MinTransporte + ANSV + Supertransporte + DITRA",
-        "url_descarga": None
-    },
-    "circular_sast": {
-        "name": "Circular Externa 20254000000867 (SAST y Control Señalización)",
-        "short_name": "Circular 20254000000867",
-        "type": "circular",
-        "priority": 3,
-        "year": 2025,
-        "official_source": "Superintendencia de Transporte",
-        "url": "https://www.supertransporte.gov.co/documentos/2025/Diciembre/Juridica_31/Circular%20Externa%20No.%2020254000000867.pdf",
-        "url_descarga": "https://www.supertransporte.gov.co/documentos/2025/Diciembre/Juridica_31/Circular%20Externa%20No.%2020254000000867.pdf"
-    },
-    "enlaces_oficiales": {
-        "name": "Enlaces Directos a Documentos Oficiales",
-        "short_name": "Enlaces Oficiales",
-        "type": "referencia",
-        "priority": 3,
-        "year": 2025,
-        "official_source": "Compilación de URLs oficiales",
-        "url_descarga": None
-    },
-    "metadata_schema": {
-        "name": "Esquema de Metadatos para RAG Jurídico-Normativo",
-        "short_name": "Esquema de Metadatos",
-        "type": "referencia",
-        "priority": 3,
-        "year": 2025,
-        "official_source": "Especificación técnica TransitoColBot",
-        "url_descarga": None
-    },
-    "ontologia_rag": {
-        "name": "Ontología y Modelo ER para RAG de Tránsito",
-        "short_name": "Ontología RAG",
-        "type": "referencia",
-        "priority": 3,
-        "year": 2025,
-        "official_source": "Especificación técnica TransitoColBot",
-        "url_descarga": None
-    },
-    "faq_golden_set": {
-        "name": "Banco de Preguntas Frecuentes (Golden Set)",
-        "short_name": "FAQ Golden Set",
-        "type": "referencia",
-        "priority": 3,
-        "year": 2025,
-        "official_source": "Pruebas de validación TransitoColBot",
-        "url_descarga": None
-    },
-    "sentencia_c321": {
-        "name": "Sentencia C-321 de 2022 (Procedimiento Contravencional)",
-        "short_name": "Sentencia C-321/2022",
-        "type": "jurisprudencia",
-        "priority": 2,
-        "year": 2022,
-        "official_source": "Corte Constitucional",
-        "nota": "Límites a potestad sancionadora, arts. 135-142 Ley 769",
-        "url_descarga": "https://www.corteconstitucional.gov.co/relatoria/2022/C-321-22.htm"
-    },
-    "sentencia_c038": {
-        "name": "Sentencia C-038 de 2020 (Fotodetección)",
-        "short_name": "Sentencia C-038/2020",
-        "type": "jurisprudencia",
-        "priority": 1,
-        "year": 2020,
-        "official_source": "Corte Constitucional",
-        "nota": "Clave: responsabilidad personal en fotomultas, no automática del propietario",
-        "url_descarga": "https://www.corteconstitucional.gov.co/relatoria/2020/C-038-20.htm"
-    },
-    "constitucion": {
-        "name": "Constitución Política de Colombia 1991",
-        "short_name": "Constitución 1991",
-        "type": "constitucion",
-        "priority": 1,
-        "year": 1991,
-        "official_source": "DAPRE / Secretaría del Senado",
-        "url": "https://www.secretariasenado.gov.co/constitucion-politica",
-        "url_descarga": "https://www.secretariasenado.gov.co/constitucion-politica"
-    }
-}
-
-# Known sentencias with direct URLs
-SENTENCIAS_URLS = {
-    "C-038": "https://www.corteconstitucional.gov.co/relatoria/2020/C-038-20.htm",
-    "C-321": "https://www.corteconstitucional.gov.co/relatoria/2022/C-321-22.htm",
-    "C-530": "https://www.corteconstitucional.gov.co/relatoria/2003/C-530-03.htm",
-    "C-980": "https://www.corteconstitucional.gov.co/relatoria/2010/C-980-10.htm",
+# Document source display names
+SOURCE_NAMES = {
+    "codigo_transito": "Ley 769 de 2002 (Código de Tránsito)",
+    "codigo_penal": "Ley 599 de 2000 (Código Penal)",
+    "decreto_2106": "Decreto 2106 de 2019",
+    "senorbiter": "Guías Señor Biter",
+    "manual_senalizacion": "Manual de Señalización Vial de Colombia",
+    "resolucion_19200": "Resolución 19200 de 2002 (Ministerio de Transporte - Cinturones de Seguridad)",
+    "ley_2252": "Ley 2252 de 2022 (Señalización obligatoria - Zonas de parqueo y cámaras de fotodetección)",
 }
 
 
-def extract_metadata_from_text(text: str, source_id: str) -> Dict[str, Optional[str]]:
+def extract_article_info(text: str) -> Dict[str, Optional[str]]:
     """
-    Extract rich metadata from a text chunk including article, chapter, title, sentencia.
-    Enhanced for Colombian legal documents.
+    Extract article number, title, and chapter from a text chunk.
+    Returns dict with 'article', 'title', 'chapter' keys.
     """
-    info = {
-        "article": None,
-        "title": None,
-        "chapter": None,
-        "sentencia": None,
-        "ley": None,
-        "decreto": None,
-        "section": None
-    }
+    info = {"article": None, "title": None, "chapter": None}
     
-    # Pattern for articles: "Artículo 123" or "ARTÍCULO 123"
-    article_pattern = r'[Aa]rt[íi]culo\.?\s*(\d+[A-Za-z]?)[\.\-\s:]'
+    # Pattern for articles: "Artículo 123" or "ARTÍCULO 123" with optional period/dash
+    article_pattern = r'[Aa]rt[íi]culo\.?\s*(\d+[A-Za-z]?)[\.\-\s]'
     article_match = re.search(article_pattern, text)
     if article_match:
         info["article"] = f"Artículo {article_match.group(1)}"
     
-    # Pattern for titles: "TÍTULO I" or "Título II"
+    # Pattern for titles: "TÍTULO I" or "Título II" etc.
     title_pattern = r'T[ÍI]TULO\s+([IVXLCDM]+|[\d]+)[\.\-\s]*([^\n]*)?'
     title_match = re.search(title_pattern, text, re.IGNORECASE)
     if title_match:
@@ -334,7 +56,7 @@ def extract_metadata_from_text(text: str, source_id: str) -> Dict[str, Optional[
         title_name = title_match.group(2).strip() if title_match.group(2) else ""
         info["title"] = f"Título {title_num}" + (f" - {title_name}" if title_name else "")
     
-    # Pattern for chapters: "CAPÍTULO I"
+    # Pattern for chapters: "CAPÍTULO I" or "Capítulo 2" etc.
     chapter_pattern = r'CAP[ÍI]TULO\s+([IVXLCDM]+|[\d]+)[\.\-\s]*([^\n]*)?'
     chapter_match = re.search(chapter_pattern, text, re.IGNORECASE)
     if chapter_match:
@@ -342,187 +64,39 @@ def extract_metadata_from_text(text: str, source_id: str) -> Dict[str, Optional[
         chap_name = chapter_match.group(2).strip() if chapter_match.group(2) else ""
         info["chapter"] = f"Capítulo {chap_num}" + (f" - {chap_name}" if chap_name else "")
     
-    # Pattern for sentencias: "C-530 de 2003" or "Sentencia C-038 de 2020"
-    sentencia_pattern = r'(?:Sentencia\s+)?([CTSU]-\d+)\s+de\s+(\d{4})'
-    sentencia_match = re.search(sentencia_pattern, text, re.IGNORECASE)
-    if sentencia_match:
-        info["sentencia"] = f"Sentencia {sentencia_match.group(1)} de {sentencia_match.group(2)}"
-    
-    # Pattern for laws: "Ley 769 de 2002"
-    ley_pattern = r'Ley\s+(\d+)\s+de\s+(\d{4})'
-    ley_match = re.search(ley_pattern, text, re.IGNORECASE)
-    if ley_match:
-        info["ley"] = f"Ley {ley_match.group(1)} de {ley_match.group(2)}"
-    
-    # Pattern for decrees: "Decreto 2106 de 2019"
-    decreto_pattern = r'Decreto\s+(\d+)\s+de\s+(\d{4})'
-    decreto_match = re.search(decreto_pattern, text, re.IGNORECASE)
-    if decreto_match:
-        info["decreto"] = f"Decreto {decreto_match.group(1)} de {decreto_match.group(2)}"
-    
-    # Section headers (common in guides)
-    section_pattern = r'^[=]+\n([^\n=]+)\n[=]+'
-    section_match = re.search(section_pattern, text, re.MULTILINE)
-    if section_match:
-        info["section"] = section_match.group(1).strip()
+    # Pattern for sections (Penal code style): "LIBRO I" or "PARTE GENERAL"
+    libro_pattern = r'LIBRO\s+([IVXLCDM]+|[\d]+)[\.\-\s]*'
+    libro_match = re.search(libro_pattern, text, re.IGNORECASE)
+    if libro_match:
+        info["title"] = f"Libro {libro_match.group(1)}" + (f" - {info['title']}" if info.get('title') else "")
     
     return info
 
 
 def format_reference(metadata: Dict) -> str:
-    """Format metadata into a readable reference string for display."""
+    """Format metadata into a readable reference string."""
     parts = []
     
     # Source document name
     source = metadata.get("source", "")
-    source_info = SOURCE_METADATA.get(source, {})
-    source_name = source_info.get("name", source)
+    source_name = SOURCE_NAMES.get(source, source)
     if source_name:
         parts.append(f"📖 {source_name}")
-    
-    # Sentencia (highest priority for jurisprudence)
-    if metadata.get("sentencia"):
-        parts.append(f"⚖️ {metadata['sentencia']}")
     
     # Article
     if metadata.get("article"):
         parts.append(f"📌 {metadata['article']}")
-    
-    # Law or Decree reference
-    if metadata.get("ley") and "Ley" not in source_name:
-        parts.append(f"📜 {metadata['ley']}")
-    if metadata.get("decreto") and "Decreto" not in source_name:
-        parts.append(f"📋 {metadata['decreto']}")
     
     # Chapter/Title
     if metadata.get("chapter"):
         parts.append(f"📂 {metadata['chapter']}")
     elif metadata.get("title"):
         parts.append(f"📂 {metadata['title']}")
-    elif metadata.get("section"):
-        parts.append(f"📂 {metadata['section']}")
     
-    return " | ".join(parts) if parts else "Referencia general"
-
-
-def get_citation_url(metadata: Dict) -> Optional[str]:
-    """
-    Get the best URL for citation from metadata.
-    Prioritizes specific sentencia URLs, then source url_descarga.
-    """
-    # Check for sentencia-specific URL
-    if metadata.get("sentencia"):
-        # Extract sentencia code (e.g., "C-038" from "Sentencia C-038 de 2020")
-        sentencia_match = re.search(r'([CTSU]-\d+)', metadata["sentencia"])
-        if sentencia_match:
-            sentencia_code = sentencia_match.group(1)
-            if sentencia_code in SENTENCIAS_URLS:
-                return SENTENCIAS_URLS[sentencia_code]
-    
-    # Get source-level URL
-    source = metadata.get("source", "")
-    source_info = SOURCE_METADATA.get(source, {})
-    return source_info.get("url_descarga") or source_info.get("url")
-
-
-def format_citation_link(metadata: Dict) -> str:
-    """
-    Format a citation as a Markdown hyperlink if URL is available.
-    Returns: "[Norma](url)" or just "Norma" if no URL.
-    """
-    source = metadata.get("source", "")
-    source_info = SOURCE_METADATA.get(source, {})
-    
-    # Build citation text
-    citation_parts = []
-    
-    # Article reference (most specific)
-    if metadata.get("article"):
-        citation_parts.append(metadata["article"])
-        
-    # Sentencia reference
-    if metadata.get("sentencia"):
-        citation_parts.append(metadata["sentencia"])
-    
-    # Source short name or name
-    short_name = source_info.get("short_name") or source_info.get("name", source)
-    if short_name and not any(short_name in p for p in citation_parts):
-        citation_parts.append(short_name)
-    
-    # Build the citation text
-    if citation_parts:
-        citation_text = ", ".join(citation_parts)
-    else:
-        citation_text = "Referencia"
-    
-    # Get URL and create link
-    url = get_citation_url(metadata)
-    if url:
-        return f"[{citation_text}]({url})"
-    return citation_text
-
-
-def format_context_for_citations(results: List[Tuple[str, float, Dict]]) -> str:
-    """
-    Format RAG results into context that includes citation information for LLM.
-    This provides the LLM with source URLs to create hyperlinked citations.
-    """
-    context_parts = []
-    seen_content = set()
-    
-    for i, (doc, relevance, metadata) in enumerate(results, 1):
-        # Simple dedup by first 100 chars
-        content_key = doc[:100]
-        if content_key in seen_content:
-            continue
-        seen_content.add(content_key)
-        
-        # Get source info
-        source = metadata.get("source", "")
-        source_info = SOURCE_METADATA.get(source, {})
-        source_name = source_info.get("short_name") or source_info.get("name", source)
-        url = get_citation_url(metadata)
-        
-        # Build citation info for LLM
-        citation_info = []
-        citation_info.append(f"Fuente: {source_name}")
-        if url:
-            citation_info.append(f"URL: {url}")
-        if metadata.get("article"):
-            citation_info.append(f"Artículo: {metadata['article']}")
-        if metadata.get("sentencia"):
-            citation_info.append(f"Sentencia: {metadata['sentencia']}")
-        if metadata.get("ley"):
-            citation_info.append(f"Ley: {metadata['ley']}")
-        if metadata.get("decreto"):
-            citation_info.append(f"Decreto: {metadata['decreto']}")
-        
-        relevance_pct = int(relevance * 100)
-        citation_header = " | ".join(citation_info)
-        
-        context_parts.append(
-            f"--- Fragmento {i} (Relevancia: {relevance_pct}%) ---\n"
-            f"{citation_header}\n\n{doc}"
-        )
-    
-    return "\n\n".join(context_parts)
-
-
-def compute_chunk_hash(text: str) -> str:
-    """Compute a hash for a text chunk for deduplication."""
-    return hashlib.md5(text.encode('utf-8')).hexdigest()[:12]
+    return " | ".join(parts) if parts else "Referencia no disponible"
 
 
 class RAGPipeline:
-    """
-    Enhanced RAG Pipeline for Colombian Transit Law.
-    Features:
-    - Multi-document indexing with source tracking
-    - Rich metadata extraction for citations
-    - Hybrid search with relevance scoring
-    - Configurable chunking strategies
-    """
-    
     def __init__(self, persist_directory: str = "./chroma_db"):
         """Initialize RAG pipeline with ChromaDB and OpenAI."""
         self.persist_directory = persist_directory
@@ -535,31 +109,6 @@ class RAGPipeline:
             metadata={"hnsw:space": "cosine"}
         )
         
-        # Track indexed documents
-        self._index_state_file = Path(persist_directory) / "index_state.json"
-        self._index_state = self._load_index_state()
-        
-        logger.info(f"RAG Pipeline initialized. Collection has {self.collection.count()} documents.")
-    
-    def _load_index_state(self) -> Dict[str, Any]:
-        """Load index state from disk."""
-        if self._index_state_file.exists():
-            try:
-                with open(self._index_state_file, 'r') as f:
-                    return json.load(f)
-            except Exception as e:
-                logger.warning(f"Could not load index state: {e}")
-        return {"indexed_files": {}, "last_update": None}
-    
-    def _save_index_state(self):
-        """Save index state to disk."""
-        self._index_state["last_update"] = datetime.now().isoformat()
-        try:
-            with open(self._index_state_file, 'w') as f:
-                json.dump(self._index_state, f, indent=2)
-        except Exception as e:
-            logger.warning(f"Could not save index state: {e}")
-    
     def _get_embedding(self, text: str) -> List[float]:
         """Get embedding for a single text using OpenAI."""
         response = self.openai_client.embeddings.create(
@@ -570,415 +119,126 @@ class RAGPipeline:
     
     def _get_embeddings_batch(self, texts: List[str]) -> List[List[float]]:
         """Get embeddings for multiple texts in batch."""
-        # OpenAI has a limit, process in sub-batches if needed
-        max_batch = 100
-        all_embeddings = []
-        
-        for i in range(0, len(texts), max_batch):
-            batch = texts[i:i + max_batch]
-            response = self.openai_client.embeddings.create(
-                model=EMBEDDING_MODEL,
-                input=batch
-            )
-            all_embeddings.extend([item.embedding for item in response.data])
-        
-        return all_embeddings
-    
-    def _create_text_splitter(self, doc_type: str = "legal") -> RecursiveCharacterTextSplitter:
-        """Create appropriate text splitter based on document type."""
-        if doc_type in ["ley", "decreto"]:
-            # Legal documents: split on article boundaries
-            separators = [
-                "\nARTÍCULO", "\nArtículo",
-                "\nCAPÍTULO", "\nCapítulo",
-                "\nTÍTULO", "\nTítulo",
-                "\nPARÁGRAFO", "\nParágrafo",
-                "\n\n", "\n", ". ", " "
-            ]
-        elif doc_type == "guia":
-            # Guides: split on section boundaries
-            separators = [
-                "\n================", "\n===",
-                "\n\n\n", "\n\n", "\n", ". ", " "
-            ]
-        elif doc_type == "jurisprudencia":
-            # Jurisprudence: split on case boundaries
-            separators = [
-                "\nSentencia", "\nSENTENCIA",
-                "\nCONSIDERANDO", "\nRESUELVE",
-                "\n\n", "\n", ". ", " "
-            ]
-        else:
-            # Default
-            separators = ["\n\n", "\n", ". ", " "]
-        
-        return RecursiveCharacterTextSplitter(
-            chunk_size=CHUNK_SIZE,
-            chunk_overlap=CHUNK_OVERLAP,
-            separators=separators,
-            length_function=len
+        response = self.openai_client.embeddings.create(
+            model=EMBEDDING_MODEL,
+            input=texts
         )
+        return [item.embedding for item in response.data]
     
-    def load_and_chunk_document(
-        self, 
-        file_path: str, 
-        source_id: str,
-        doc_type: str = "legal"
-    ) -> List[Tuple[str, Dict]]:
-        """
-        Load document and split into chunks with metadata.
-        Returns list of (chunk_text, metadata) tuples.
-        """
+    def load_and_chunk_document(self, file_path: str) -> List[str]:
+        """Load document and split into chunks."""
         with open(file_path, 'r', encoding='utf-8') as f:
             text = f.read()
         
-        splitter = self._create_text_splitter(doc_type)
+        # Use RecursiveCharacterTextSplitter for smart chunking
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=CHUNK_SIZE,
+            chunk_overlap=CHUNK_OVERLAP,
+            separators=["\nARTÍCULO", "\nCAPITULO", "\nTÍTULO", "\n\n", "\n", " "]
+        )
+        
         chunks = splitter.split_text(text)
-        
-        # Enrich each chunk with metadata
-        enriched_chunks = []
-        for i, chunk in enumerate(chunks):
-            # Extract metadata from chunk content
-            extracted_meta = extract_metadata_from_text(chunk, source_id)
-            
-            # Build full metadata
-            source_info = SOURCE_METADATA.get(source_id, {})
-            metadata = {
-                "source": source_id,
-                "source_name": source_info.get("name", source_id),
-                "source_type": source_info.get("type", "unknown"),
-                "source_priority": source_info.get("priority", 5),
-                "chunk_index": i,
-                "chunk_hash": compute_chunk_hash(chunk),
-                "indexed_at": datetime.now().isoformat(),
-                **{k: v for k, v in extracted_meta.items() if v is not None}
-            }
-            
-            enriched_chunks.append((chunk, metadata))
-        
-        return enriched_chunks
+        return chunks
     
-    def index_document(
-        self, 
-        file_path: str, 
-        source_id: str,
-        force_reindex: bool = False
-    ) -> int:
-        """
-        Index a single document into ChromaDB.
-        Returns number of chunks indexed.
-        """
-        file_path = Path(file_path)
-        if not file_path.exists():
-            logger.error(f"File not found: {file_path}")
-            return 0
+    def index_document(self, file_path: str, force_reindex: bool = False) -> int:
+        """Index a document into ChromaDB. Returns number of chunks indexed."""
+        # Check if already indexed
+        if not force_reindex and self.collection.count() > 0:
+            print(f"Collection already has {self.collection.count()} documents. Skipping indexing.")
+            return self.collection.count()
         
-        # Check if already indexed (by file hash)
-        file_hash = hashlib.md5(file_path.read_bytes()).hexdigest()
-        indexed_info = self._index_state.get("indexed_files", {}).get(str(file_path), {})
+        # Clear existing data if reindexing
+        if force_reindex and self.collection.count() > 0:
+            self.chroma_client.delete_collection(COLLECTION_NAME)
+            self.collection = self.chroma_client.get_or_create_collection(
+                name=COLLECTION_NAME,
+                metadata={"hnsw:space": "cosine"}
+            )
         
-        if not force_reindex and indexed_info.get("hash") == file_hash:
-            logger.info(f"Document already indexed (hash match): {file_path.name}")
-            return indexed_info.get("chunk_count", 0)
+        print(f"Loading and chunking document: {file_path}")
+        chunks = self.load_and_chunk_document(file_path)
+        print(f"Created {len(chunks)} chunks")
         
-        # Get document type from source metadata
-        source_info = SOURCE_METADATA.get(source_id, {})
-        doc_type = source_info.get("type", "legal")
-        
-        logger.info(f"Indexing document: {file_path.name} (source: {source_id}, type: {doc_type})")
-        
-        # Load and chunk
-        chunks_with_meta = self.load_and_chunk_document(file_path, source_id, doc_type)
-        logger.info(f"Created {len(chunks_with_meta)} chunks")
-        
-        if not chunks_with_meta:
-            return 0
-        
-        # Delete old chunks from this source if reindexing
-        if force_reindex or indexed_info:
-            try:
-                # Get IDs of existing chunks from this source
-                existing = self.collection.get(
-                    where={"source": source_id},
-                    include=[]
-                )
-                if existing and existing['ids']:
-                    self.collection.delete(ids=existing['ids'])
-                    logger.info(f"Deleted {len(existing['ids'])} old chunks from source {source_id}")
-            except Exception as e:
-                logger.warning(f"Could not delete old chunks: {e}")
-        
-        # Process and index in batches
-        batch_size = 50
+        # Process in batches of 100 (OpenAI limit for embeddings)
+        batch_size = 100
         total_indexed = 0
         
-        for i in range(0, len(chunks_with_meta), batch_size):
-            batch = chunks_with_meta[i:i + batch_size]
-            texts = [c[0] for c in batch]
-            metadatas = [c[1] for c in batch]
-            ids = [f"{source_id}_{m['chunk_hash']}" for _, m in batch]
+        for i in range(0, len(chunks), batch_size):
+            batch = chunks[i:i + batch_size]
+            batch_ids = [f"chunk_{i + j}" for j in range(len(batch))]
             
-            logger.info(f"Embedding batch {i // batch_size + 1}/{(len(chunks_with_meta) - 1) // batch_size + 1}...")
-            embeddings = self._get_embeddings_batch(texts)
+            print(f"Embedding batch {i // batch_size + 1}/{(len(chunks) - 1) // batch_size + 1}...")
+            embeddings = self._get_embeddings_batch(batch)
             
-            self.collection.upsert(
-                ids=ids,
+            self.collection.add(
+                ids=batch_ids,
                 embeddings=embeddings,
-                documents=texts,
-                metadatas=metadatas
+                documents=batch,
+                metadatas=[{"chunk_index": i + j} for j in range(len(batch))]
             )
             total_indexed += len(batch)
         
-        # Update index state
-        self._index_state.setdefault("indexed_files", {})[str(file_path)] = {
-            "hash": file_hash,
-            "source_id": source_id,
-            "chunk_count": total_indexed,
-            "indexed_at": datetime.now().isoformat()
-        }
-        self._save_index_state()
-        
-        logger.info(f"Successfully indexed {total_indexed} chunks from {file_path.name}")
+        print(f"Successfully indexed {total_indexed} chunks")
         return total_indexed
     
-    def index_all_documents(self, documents_config: List[Dict], force_reindex: bool = False) -> int:
-        """
-        Index multiple documents from a configuration list.
-        Config format: [{"path": "file.txt", "source_id": "codigo_transito"}, ...]
-        """
-        total = 0
-        for doc in documents_config:
-            count = self.index_document(
-                doc["path"], 
-                doc["source_id"],
-                force_reindex=force_reindex
-            )
-            total += count
-        
-        logger.info(f"Total indexed: {total} chunks from {len(documents_config)} documents")
-        return total
-    
-    def retrieve(
-        self, 
-        query: str, 
-        n_results: int = 5,
-        source_filter: Optional[List[str]] = None,
-        min_relevance: float = 0.0
-    ) -> List[Tuple[str, float, Dict]]:
-        """
-        Retrieve top N relevant chunks for a query with metadata.
-        
-        Args:
-            query: Search query
-            n_results: Maximum results to return
-            source_filter: Optional list of source_ids to filter by
-            min_relevance: Minimum relevance score (0-1, higher is better)
-            
-        Returns:
-            List of (document, relevance_score, metadata) tuples
-        """
+    def retrieve(self, query: str, n_results: int = 5) -> List[Tuple[str, float, Dict]]:
+        """Retrieve top N relevant chunks for a query with metadata."""
         query_embedding = self._get_embedding(query)
-        
-        # Build where clause for filtering
-        where = None
-        if source_filter:
-            where = {"source": {"$in": source_filter}}
         
         results = self.collection.query(
             query_embeddings=[query_embedding],
-            n_results=n_results * 2,  # Get more, filter later
-            where=where,
+            n_results=n_results,
             include=["documents", "distances", "metadatas"]
         )
         
-        if not results['documents'] or not results['documents'][0]:
-            return []
+        # Return list of (document, distance, metadata) tuples
+        documents = results['documents'][0] if results['documents'] else []
+        distances = results['distances'][0] if results['distances'] else []
+        metadatas = results['metadatas'][0] if results['metadatas'] else []
         
-        documents = results['documents'][0]
-        distances = results['distances'][0]
-        metadatas = results['metadatas'][0]
-        
-        # Convert distance to relevance score (cosine distance -> similarity)
-        # ChromaDB returns distance, lower is better. Convert to similarity.
+        # Enrich metadata with extracted article info if not already present
         enriched_results = []
         for doc, dist, meta in zip(documents, distances, metadatas):
-            # Cosine distance to similarity: similarity = 1 - distance
-            relevance = 1 - dist
-            
-            # Apply minimum relevance filter
-            if relevance < min_relevance:
-                continue
-            
-            # Boost by source priority
-            priority = meta.get("source_priority", 5)
-            boosted_relevance = relevance * (1 + (5 - priority) * 0.05)
-            
-            enriched_results.append((doc, boosted_relevance, meta))
+            # If metadata doesn't have article info, extract it from the text
+            if not meta.get("article"):
+                extracted = extract_article_info(doc)
+                meta = {**meta, **extracted}
+            enriched_results.append((doc, dist, meta))
         
-        # Sort by boosted relevance and take top n_results
-        enriched_results.sort(key=lambda x: x[1], reverse=True)
-        return enriched_results[:n_results]
+        return enriched_results
     
-    def get_context_for_query(
-        self, 
-        query: str, 
-        n_results: int = 5,
-        include_references: bool = True,
-        include_citation_urls: bool = True
-    ) -> str:
-        """
-        Get formatted context string for LLM with references and citation URLs.
-        
-        Args:
-            query: Search query
-            n_results: Maximum results to return
-            include_references: Include formatted references
-            include_citation_urls: Include URLs for LLM to create hyperlinks
-            
-        Returns:
-            Formatted context string with source information and URLs
-        """
+    def get_context_for_query(self, query: str, n_results: int = 5) -> str:
+        """Get formatted context string for a query with references."""
         results = self.retrieve(query, n_results)
         
         if not results:
-            return "No se encontraron artículos o normas relevantes en la base de datos."
+            return "No se encontraron artículos relevantes."
         
-        # Use the new citation-aware formatter if URLs are needed
-        if include_citation_urls:
-            return format_context_for_citations(results)
-        
-        # Legacy format without URLs
         context_parts = []
-        seen_content = set()  # Deduplicate similar chunks
-        
-        for i, (doc, relevance, metadata) in enumerate(results, 1):
-            # Simple dedup by first 100 chars
-            content_key = doc[:100]
-            if content_key in seen_content:
-                continue
-            seen_content.add(content_key)
-            
-            if include_references:
-                reference = format_reference(metadata)
-                relevance_pct = int(relevance * 100)
-                context_parts.append(
-                    f"--- Fragmento {i} (Relevancia: {relevance_pct}%) ---\n"
-                    f"{reference}\n\n{doc}"
-                )
-            else:
-                context_parts.append(f"--- Fragmento {i} ---\n{doc}")
+        for i, (doc, distance, metadata) in enumerate(results, 1):
+            reference = format_reference(metadata)
+            context_parts.append(f"--- Fragmento {i} ---\n{reference}\n\n{doc}")
         
         return "\n\n".join(context_parts)
-    
-    def get_stats(self) -> Dict[str, Any]:
-        """Get statistics about the indexed documents."""
-        total_docs = self.collection.count()
-        
-        # Get counts by source
-        source_counts = {}
-        for source_id in SOURCE_METADATA.keys():
-            try:
-                result = self.collection.get(
-                    where={"source": source_id},
-                    include=[]
-                )
-                source_counts[source_id] = len(result['ids']) if result['ids'] else 0
-            except:
-                source_counts[source_id] = 0
-        
-        return {
-            "total_chunks": total_docs,
-            "by_source": source_counts,
-            "index_state": self._index_state,
-            "collection_name": COLLECTION_NAME,
-            "embedding_model": EMBEDDING_MODEL
-        }
 
 
-def get_default_documents_config(base_path: str = ".") -> List[Dict]:
-    """Get default document configuration for indexing."""
-    base = Path(base_path)
-    
-    configs = []
-    
-    # Main legal documents - ordered by priority
-    doc_mappings = [
-        # Primary sources (laws and codes)
-        ("codigo_transito.txt", "codigo_transito"),
-        ("decreto_2106_2019.txt", "decreto_2106"),
-        # Compendiums and reference
-        ("docs/compendio_normativo.txt", "compendio_normativo"),
-        ("docs/inventario_documentos.txt", "inventario_documentos"),
-        ("docs/enlaces_oficiales.txt", "enlaces_oficiales"),
-        ("docs/metadata_schema.txt", "metadata_schema"),
-        ("docs/ontologia_rag.txt", "ontologia_rag"),
-        ("docs/faq_golden_set.txt", "faq_golden_set"),
-        # Practical guides
-        ("senorbiter_guias.txt", "senorbiter"),
-    ]
-    
-    for filename, source_id in doc_mappings:
-        path = base / filename
-        if path.exists():
-            configs.append({"path": str(path), "source_id": source_id})
-            logger.debug(f"Found document: {filename} -> {source_id}")
-        else:
-            logger.debug(f"Document not found (optional): {filename}")
-    
-    return configs
-
-
-def initialize_rag(
-    base_path: str = ".", 
-    persist_directory: str = "./chroma_db",
-    force_reindex: bool = False
-) -> RAGPipeline:
-    """Initialize and index the RAG pipeline with all available documents."""
+def initialize_rag(document_path: str, persist_directory: str = "./chroma_db") -> RAGPipeline:
+    """Initialize and index the RAG pipeline."""
     rag = RAGPipeline(persist_directory=persist_directory)
-    
-    # Get documents to index
-    docs_config = get_default_documents_config(base_path)
-    
-    if docs_config:
-        logger.info(f"Found {len(docs_config)} documents to index")
-        rag.index_all_documents(docs_config, force_reindex=force_reindex)
-    else:
-        logger.warning("No documents found to index!")
-    
+    rag.index_document(document_path)
     return rag
 
 
 if __name__ == "__main__":
     # Test the RAG pipeline
-    import logging
-    logging.basicConfig(level=logging.INFO)
-    
     from dotenv import load_dotenv
     load_dotenv()
     
-    print("Initializing RAG pipeline...")
-    rag = initialize_rag(force_reindex=True)
+    rag = initialize_rag("codigo_transito.txt")
     
-    print("\n📊 Index Statistics:")
-    stats = rag.get_stats()
-    print(f"Total chunks: {stats['total_chunks']}")
-    for source, count in stats['by_source'].items():
-        if count > 0:
-            print(f"  - {source}: {count} chunks")
-    
-    # Test queries
-    test_queries = [
-        "¿Cuál es la velocidad máxima permitida en zona escolar?",
-        "¿Cómo tumbar una fotomulta?",
-        "¿Las multas de tránsito prescriben?",
-        "¿Qué dice la Sentencia C-038 de 2020?",
-        "¿Me pueden exigir documentos físicos en un retén?"
-    ]
-    
-    for query in test_queries:
-        print(f"\n🔍 Query: {query}")
-        print("-" * 50)
-        results = rag.retrieve(query, n_results=2)
-        for doc, score, meta in results:
-            print(f"[{score:.2f}] {format_reference(meta)}")
-            print(f"    {doc[:150]}...")
+    # Test query
+    query = "¿Cuál es la velocidad máxima permitida en zona escolar?"
+    print(f"\nQuery: {query}")
+    print("\nRelevant chunks:")
+    for doc, dist in rag.retrieve(query):
+        print(f"\n[Distance: {dist:.4f}]\n{doc[:300]}...")
