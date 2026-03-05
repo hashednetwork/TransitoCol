@@ -874,6 +874,78 @@ Escribe tu pregunta o envía un audio 🎤
     
     # ==================== BOT RUNNER ====================
     
+
+    async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Analyze a photo of a traffic ticket using OpenAI Vision."""
+        user = update.effective_user
+        user_id = user.id
+
+        if context.user_data.get("template"):
+            return
+
+        is_allowed, remaining = await self._check_rate_limit(user_id)
+        if not is_allowed:
+            await self._send_rate_limit_message(update)
+            return
+
+        analytics.track_query(user.id, user.username, user.first_name, 'photo', 'imagen_comparendo')
+
+        await update.message.chat.send_action(ChatAction.UPLOAD_PHOTO)
+        await update.message.reply_text(
+            "🔍 *Analizando tu comparendo/fotomulta...*\n\n"
+            "_Extrayendo información y verificando validez legal. Un momento..._",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+        try:
+            photo = update.message.photo[-1]
+            photo_file = await context.bot.get_file(photo.file_id)
+            photo_url = photo_file.file_path
+
+            rag_context = self.rag.get_context_for_query(
+                "fotomulta comparendo validez señalización notificación prescripción nulidad Ley 1843 Ley 2252 Ley 769",
+                n_results=6
+            )
+
+            user_message = f"""Analiza esta imagen de un comparendo o fotomulta colombiana.
+
+CONTEXTO LEGAL DE REFERENCIA:
+{rag_context}
+
+Aplica los criterios de validez y emite el veredicto completo."""
+
+            response = self.openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": VISION_SYSTEM_PROMPT},
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": user_message},
+                            {"type": "image_url", "image_url": {"url": photo_url, "detail": "high"}}
+                        ]
+                    }
+                ],
+                max_tokens=1500,
+                temperature=0.2
+            )
+
+            analysis = response.choices[0].message.content
+            await update.message.chat.send_action(ChatAction.TYPING)
+
+            try:
+                await update.message.reply_text(analysis, parse_mode=ParseMode.MARKDOWN)
+            except Exception:
+                await update.message.reply_text(analysis)
+
+            logger.info(f"Photo analysis done for user {user_id}")
+
+        except Exception as e:
+            logger.error(f"Error analyzing photo for user {user_id}: {e}")
+            await update.message.reply_text(
+                "❌ Error analizando la imagen. Asegúrate de que la foto sea clara y legible, luego intenta de nuevo."
+            )
+
     def run(self) -> None:
         """Run the bot."""
         logger.info("Starting TransitoColBot...")
@@ -922,6 +994,7 @@ Escribe tu pregunta o envía un audio 🎤
         )
         self.application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         self.application.add_handler(MessageHandler(filters.VOICE, self.handle_voice))
+        self.application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
         
         # Start polling
         logger.info("Bot is running. Press Ctrl+C to stop.")
@@ -935,3 +1008,52 @@ def create_bot(rag_pipeline: RAGPipeline) -> TransitoBot:
         raise ValueError("TELEGRAM_BOT_TOKEN not found in environment variables")
     
     return TransitoBot(rag_pipeline, telegram_token)
+
+# ==================== PHOTO ANALYSIS (VISION) ====================
+
+VISION_SYSTEM_PROMPT = """Eres un experto legal en tránsito colombiano. Analizas imágenes de comparendos, fotomultas y citaciones de tránsito.
+
+Tu tarea es:
+1. EXTRAER la información visible del documento (tipo de infracción, fecha, placa, monto, entidad emisora, número de comparendo, firma del agente si aplica, señalización visible si es fotomulta, fecha de notificación)
+2. EVALUAR su validez legal según la normativa colombiana vigente
+3. EMITIR un veredicto claro
+
+CRITERIOS DE VALIDEZ que debes verificar:
+- **Fotomultas (Ley 1843/2017):** Notificación en ≤3 días hábiles, señalización 500m antes de la cámara, cámara autorizada por ANSV, identificación del conductor (no solo propietario - C-038/2020)
+- **Parqueo (Ley 2252/2022):** La zona debe tener señalización debida conforme al Manual de Señalización Vial. Sin señalización → nulo de pleno derecho
+- **Prescripción (Art. 159 Ley 769/2002):** Si han pasado +3 años desde la infracción → prescrito
+- **Debido proceso (Art. 29 Constitución):** Debe identificar claramente al conductor, la infracción, el artículo violado y la sanción aplicable
+- **Firma y sello:** Comparendos presenciales deben tener firma del agente y datos de identificación
+- **Código de infracción:** Debe corresponder al Código Nacional de Tránsito (Ley 769/2002)
+
+FORMATO DE RESPUESTA (obligatorio):
+```
+🔍 ANÁLISIS DEL COMPARENDO/FOTOMULTA
+
+📋 INFORMACIÓN EXTRAÍDA:
+• Tipo: [fotomulta / comparendo presencial / citación]
+• Infracción: [código y descripción]
+• Fecha infracción: [fecha]
+• Fecha notificación: [fecha o "no visible"]
+• Placa: [placa]
+• Monto: [valor en pesos]
+• Entidad: [quién lo emitió]
+• Número: [número de comparendo]
+
+⚖️ ANÁLISIS LEGAL:
+[Lista de hallazgos por cada criterio verificado]
+
+🏁 VEREDICTO: [una de estas opciones]
+✅ VÁLIDO - Cumple requisitos legales
+⚠️ POSIBLEMENTE IMPUGNABLE - [razón principal]  
+❌ NULO / PRESCRITO - [razón legal específica con norma]
+
+💡 RECOMENDACIÓN:
+[Pasos concretos que debe seguir el ciudadano]
+
+📚 Normas aplicables: [lista de normas citadas]
+```
+
+Si la imagen NO es un comparendo o fotomulta, responde: "⚠️ No detecto un comparendo o fotomulta en la imagen. Por favor envía una foto clara del documento."
+Si la imagen es ilegible, pide que reenvíen con mejor calidad."""
+
