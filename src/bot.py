@@ -395,7 +395,7 @@ Escribe tu pregunta o envía un audio 🎤
             return
         
         stats = analytics.get_stats()
-        rag_stats = self.rag.get_stats()
+        rag_chunks = self.rag.collection.count() if hasattr(self.rag, 'collection') else 0
         
         # Format top users
         top_users_text = ""
@@ -426,7 +426,7 @@ Escribe tu pregunta o envía un audio 🎤
 
 *RAG:*
 • Modelo: {self.llm_model}
-• Chunks indexados: {rag_stats['total_chunks']}
+• Chunks indexados: {rag_chunks}
 
 *Usuarios recientes (24h):* {len(stats['recent_users'])}
 """
