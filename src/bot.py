@@ -655,7 +655,8 @@ Escribe tu pregunta o envía un audio 🎤
         
         template_type = query.data.replace("doc_", "")
         user_id = update.effective_user.id
-        self.user_data[user_id] = {"template": template_type}
+        context.user_data.clear()
+        context.user_data["template"] = template_type
         
         templates_names = {
             "prescripcion": "Prescripción de multa (Art. 159 Ley 769)",
@@ -674,7 +675,7 @@ Escribe tu pregunta o envía un audio 🎤
     
     async def get_nombre(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         user_id = update.effective_user.id
-        self.user_data[user_id]["nombre"] = update.message.text
+        context.user_data["nombre"] = update.message.text
         await update.message.reply_text(
             "📝 Escribe tu *número de cédula*:",
             parse_mode=ParseMode.MARKDOWN
@@ -683,7 +684,7 @@ Escribe tu pregunta o envía un audio 🎤
     
     async def get_cedula(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         user_id = update.effective_user.id
-        self.user_data[user_id]["cedula"] = update.message.text
+        context.user_data["cedula"] = update.message.text
         await update.message.reply_text(
             "🏠 Escribe tu *dirección completa* (para notificaciones):",
             parse_mode=ParseMode.MARKDOWN
@@ -692,7 +693,7 @@ Escribe tu pregunta o envía un audio 🎤
     
     async def get_direccion(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         user_id = update.effective_user.id
-        self.user_data[user_id]["direccion"] = update.message.text
+        context.user_data["direccion"] = update.message.text
         await update.message.reply_text(
             "📱 Escribe tu *número de teléfono*:",
             parse_mode=ParseMode.MARKDOWN
@@ -701,7 +702,7 @@ Escribe tu pregunta o envía un audio 🎤
     
     async def get_telefono(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         user_id = update.effective_user.id
-        self.user_data[user_id]["telefono"] = update.message.text
+        context.user_data["telefono"] = update.message.text
         await update.message.reply_text(
             "📧 Escribe tu *correo electrónico*:",
             parse_mode=ParseMode.MARKDOWN
@@ -710,7 +711,7 @@ Escribe tu pregunta o envía un audio 🎤
     
     async def get_email(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         user_id = update.effective_user.id
-        self.user_data[user_id]["email"] = update.message.text
+        context.user_data["email"] = update.message.text
         await update.message.reply_text(
             "🏙️ ¿En qué *ciudad* está la autoridad de tránsito?\n"
             "_Ejemplo: Bogotá D.C., Medellín, Cali_",
@@ -720,7 +721,7 @@ Escribe tu pregunta o envía un audio 🎤
     
     async def get_ciudad(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         user_id = update.effective_user.id
-        self.user_data[user_id]["ciudad"] = update.message.text
+        context.user_data["ciudad"] = update.message.text
         await update.message.reply_text(
             "🔢 Escribe el *número del comparendo/multa*:",
             parse_mode=ParseMode.MARKDOWN
@@ -729,7 +730,7 @@ Escribe tu pregunta o envía un audio 🎤
     
     async def get_comparendo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         user_id = update.effective_user.id
-        self.user_data[user_id]["comparendo"] = update.message.text
+        context.user_data["comparendo"] = update.message.text
         await update.message.reply_text(
             "📅 ¿Cuál fue la *fecha de la infracción*?\n"
             "_Ejemplo: 15 de enero de 2022_",
@@ -739,7 +740,7 @@ Escribe tu pregunta o envía un audio 🎤
     
     async def get_fecha(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         user_id = update.effective_user.id
-        self.user_data[user_id]["fecha"] = update.message.text
+        context.user_data["fecha"] = update.message.text
         await update.message.reply_text(
             "🚗 Escribe la *placa del vehículo*:",
             parse_mode=ParseMode.MARKDOWN
@@ -748,7 +749,7 @@ Escribe tu pregunta o envía un audio 🎤
     
     async def get_placa(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         user_id = update.effective_user.id
-        self.user_data[user_id]["placa"] = update.message.text
+        context.user_data["placa"] = update.message.text
         await update.message.reply_text(
             "📝 Describe brevemente los *hechos adicionales* de tu caso.\n\n"
             "_Ejemplo: 'Nunca recibí notificación', 'La cámara no tenía señalización'_\n\n"
@@ -760,9 +761,9 @@ Escribe tu pregunta o envía un audio 🎤
     async def get_hechos(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         user_id = update.effective_user.id
         text = update.message.text
-        self.user_data[user_id]["hechos"] = "" if text == "/saltar" else text
+        context.user_data["hechos"] = "" if text == "/saltar" else text
         
-        data = self.user_data[user_id]
+        data = context.user_data
         resumen = f"""📄 *RESUMEN DE TU DOCUMENTO*
 
 👤 Nombre: {data['nombre']}
@@ -795,13 +796,13 @@ Escribe tu pregunta o envía un audio 🎤
         
         if query.data == "doc_cancel_final":
             user_id = update.effective_user.id
-            if user_id in self.user_data:
-                del self.user_data[user_id]
+            if context.user_data:
+                context.user_data.clear()
             await query.edit_message_text("❌ Generación cancelada.")
             return ConversationHandler.END
         
         user_id = update.effective_user.id
-        data = self.user_data.get(user_id, {})
+        data = context.user_data
         
         # Track document generation
         analytics.track_query(
@@ -854,16 +855,16 @@ Escribe tu pregunta o envía un audio 🎤
             )
         
         # Clean up
-        if user_id in self.user_data:
-            del self.user_data[user_id]
+        if context.user_data:
+            context.user_data.clear()
         
         return ConversationHandler.END
     
     async def cancel_documento(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Cancel document generation."""
         user_id = update.effective_user.id
-        if user_id in self.user_data:
-            del self.user_data[user_id]
+        if context.user_data:
+            context.user_data.clear()
         await update.message.reply_text("❌ Generación de documento cancelada.")
         return ConversationHandler.END
     
