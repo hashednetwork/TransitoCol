@@ -249,15 +249,48 @@ class RAGPipeline:
             pass
         return {"total_chunks": total, "by_source": by_source}
 
+    def _keyword_boost(self, query: str, existing_docs: list, n: int = 3) -> list:
+        """Find chunks with key terms from query that semantic search missed."""
+        stopwords = {"que","del","los","las","una","con","para","por","como","son","hay",
+                     "puede","este","esta","cuando","desde","hasta","entre","sobre","carro",
+                     "vehiculo","vehículo","particular","usar","tiene","debe","esta","están"}
+        words = [w.lower().strip("?.,!;:()") for w in query.split() 
+                 if len(w) > 3 and w.lower().strip("?.,!;:()") not in stopwords]
+        # Sort by length descending — longer words are more specific
+        words = sorted(set(words), key=len, reverse=True)
+        boosted = []
+        seen = set(d[:80] for d in existing_docs)
+        for word in words[:5]:
+            try:
+                r = self.collection.get(
+                    where_document={"$contains": word},
+                    include=["documents","metadatas"]
+                )
+                for doc, meta in zip(r["documents"], r["metadatas"]):
+                    if doc[:80] not in seen:
+                        boosted.append((doc, 0.5, meta))
+                        seen.add(doc[:80])
+                        if len(boosted) >= n:
+                            break
+            except Exception:
+                pass
+            if len(boosted) >= n:
+                break
+        return boosted
+
     def get_context_for_query(self, query: str, n_results: int = 5) -> str:
         """Get formatted context string for a query with references."""
         results = self.retrieve(query, n_results)
         
-        if not results:
+        # Keyword boost: surface relevant chunks semantic search may have missed
+        boosted = self._keyword_boost(query, [r[0] for r in results], n=3)
+        all_results = results + boosted
+        
+        if not all_results:
             return "No se encontraron artículos relevantes."
         
         context_parts = []
-        for i, (doc, distance, metadata) in enumerate(results, 1):
+        for i, (doc, distance, metadata) in enumerate(all_results, 1):
             reference = format_reference(metadata)
             context_parts.append(f"--- Fragmento {i} ---\n{reference}\n\n{doc}")
         
