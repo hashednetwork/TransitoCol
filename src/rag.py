@@ -20,7 +20,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 # Constants
 CHUNK_SIZE = 800
 CHUNK_OVERLAP = 150
-COLLECTION_NAME = "codigo_transito"
+COLLECTION_NAME = "transito_colombia_v2"
 EMBEDDING_MODEL = "text-embedding-3-small"
 
 # Document source display names
@@ -181,25 +181,53 @@ class RAGPipeline:
         print(f"Successfully indexed {total_indexed} chunks")
         return total_indexed
     
+    def _detect_article_query(self, query: str) -> Optional[str]:
+        """Detect if query asks for a specific article. Returns Articulo N or None."""
+        pattern = r'art[í i]culo\.?\s*(\d+[A-Za-z-]*)|art\.?\s+(\d+[A-Za-z-]*)'
+        match = re.search(pattern, query, re.IGNORECASE)
+        if match:
+            num = match.group(1) or match.group(2)
+            return f"Artículo {num}"
+        return None
+
     def retrieve(self, query: str, n_results: int = 5) -> List[Tuple[str, float, Dict]]:
-        """Retrieve top N relevant chunks for a query with metadata."""
-        query_embedding = self._get_embedding(query)
+        """Retrieve top N relevant chunks. Uses metadata filter for article-specific queries."""
+        article_filter = self._detect_article_query(query)
         
+        if article_filter:
+            try:
+                exact = self.collection.get(
+                    where={"article": article_filter},
+                    include=["documents", "metadatas"]
+                )
+                if exact and exact['ids']:
+                    exact_results = [(doc, 0.0, meta) for doc, meta in zip(exact['documents'], exact['metadatas'])]
+                    # Add semantic results for extra context
+                    q_emb = self._get_embedding(query)
+                    sem = self.collection.query(query_embeddings=[q_emb], n_results=n_results,
+                                                include=["documents","distances","metadatas"])
+                    seen = set(d[:50] for d, _ in [(r[0], r[1]) for r in exact_results])
+                    combined = list(exact_results)
+                    for doc, dist, meta in zip(sem['documents'][0], sem['distances'][0], sem['metadatas'][0]):
+                        if doc[:50] not in seen:
+                            combined.append((doc, dist, meta))
+                    return combined[:n_results]
+            except Exception:
+                pass
+
+        query_embedding = self._get_embedding(query)
         results = self.collection.query(
             query_embeddings=[query_embedding],
             n_results=n_results,
             include=["documents", "distances", "metadatas"]
         )
         
-        # Return list of (document, distance, metadata) tuples
         documents = results['documents'][0] if results['documents'] else []
         distances = results['distances'][0] if results['distances'] else []
         metadatas = results['metadatas'][0] if results['metadatas'] else []
         
-        # Enrich metadata with extracted article info if not already present
         enriched_results = []
         for doc, dist, meta in zip(documents, distances, metadatas):
-            # If metadata doesn't have article info, extract it from the text
             if not meta.get("article"):
                 extracted = extract_article_info(doc)
                 meta = {**meta, **extracted}
@@ -207,6 +235,20 @@ class RAGPipeline:
         
         return enriched_results
     
+    def get_stats(self) -> dict:
+        """Get stats about the indexed collection."""
+        total = self.collection.count()
+        # Try to get breakdown by source
+        by_source = {}
+        try:
+            all_meta = self.collection.get(include=["metadatas"])["metadatas"]
+            for m in all_meta:
+                src = m.get("source", "unknown")
+                by_source[src] = by_source.get(src, 0) + 1
+        except Exception:
+            pass
+        return {"total_chunks": total, "by_source": by_source}
+
     def get_context_for_query(self, query: str, n_results: int = 5) -> str:
         """Get formatted context string for a query with references."""
         results = self.retrieve(query, n_results)
@@ -222,11 +264,16 @@ class RAGPipeline:
         return "\n\n".join(context_parts)
 
 
-def initialize_rag(document_path: str, persist_directory: str = "./chroma_db") -> RAGPipeline:
-    """Initialize and index the RAG pipeline."""
+def initialize_rag(base_path: str = ".", persist_directory: str = "./chroma_db", force_reindex: bool = False) -> RAGPipeline:
+    """Initialize RAG pipeline. Connects to existing ChromaDB collection (already indexed)."""
     rag = RAGPipeline(persist_directory=persist_directory)
-    rag.index_document(document_path)
+    print(f"RAG connected. Collection has {rag.collection.count()} chunks.")
     return rag
+
+def get_stats(rag: RAGPipeline) -> dict:
+    """Get collection stats."""
+    total = rag.collection.count()
+    return {"total_chunks": total, "by_source": {}}
 
 
 if __name__ == "__main__":
