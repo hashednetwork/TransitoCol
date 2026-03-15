@@ -116,7 +116,7 @@ SYSTEM_PROMPT = """Eres un asistente legal especializado en normativa de tránsi
 - Usa viñetas y estructura clara
 - **SIEMPRE cita las normas con hipervínculos Markdown [Norma](URL)** cuando haya URL disponible en el contexto
 - Da pasos concretos cuando aplique
-- Si no tienes la información, indica que no la tienes en tu base de conocimiento
+- Usa SIEMPRE el contexto proporcionado aunque la coincidencia no sea exacta. Si el contexto es relevante aunque no mencione el término exacto, úsalo y explícalo. Solo di que no tienes información si el contexto es completamente irrelevante al tema.
 - Al final, incluye una sección "📚 Fuentes citadas:" con los enlaces a las normas mencionadas
 
 Recuerda: Eres un asistente informativo, no un abogado. Sugiere consultar profesional para casos complejos."""
@@ -172,7 +172,7 @@ class TransitoBot:
 ## Pregunta del usuario:
 {query}
 
-Responde basándote en el contexto proporcionado. Si la información no está disponible, indícalo claramente."""
+Responde basándote en el contexto proporcionado. Usa el contexto aunque no coincida exactamente con los términos de la pregunta — interpreta y relaciona conceptos similares. Solo indica que no tienes información si el contexto es completamente ajeno al tema."""
 
         try:
             response = self.openai_client.chat.completions.create(
